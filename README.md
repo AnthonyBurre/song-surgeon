@@ -40,6 +40,10 @@ runs inside a Web Worker so the UI stays responsive.
    is applied to each input channel independently, so a stereo source yields stereo
    stems that keep their original image.
 
+Each tonal part is also labelled with an estimated musical key — a chroma
+(pitch-class profile) correlated against the Krumhansl–Kessler key profiles
+(`src/dsp/pitch.ts`); percussive/atonal parts are left unlabelled.
+
 The result is a set of stems played in sync (`src/ui/playback.ts`) with per-part
 solo/mute/loop and (mono or stereo) WAV download.
 

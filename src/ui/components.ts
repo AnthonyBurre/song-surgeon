@@ -75,6 +75,9 @@ export function renderComponents(
     counts[comp.kind] += 1;
     const n = counts[comp.kind];
     const label = `${meta.word} ${n}`;
+    // A detected key for tonal parts; analyzePitch already collapses unpitched /
+    // low-confidence results to "—", so anything else is worth showing.
+    const key = comp.pitch && comp.pitch.name !== '—' ? comp.pitch.name : '';
 
     const card = document.createElement('div');
     card.className = `card ${meta.cls}`;
@@ -83,6 +86,7 @@ export function renderComponents(
         <input class="select" type="checkbox" title="Select to combine" />
         <span class="badge">${meta.tag}${n}</span>
         <span class="label">${label}</span>
+        ${key ? `<span class="pitch" title="Estimated key">${key}</span>` : ''}
         <div class="card-actions">
           <button class="btn solo" type="button">Solo</button>
           <button class="btn mute" type="button">Mute</button>

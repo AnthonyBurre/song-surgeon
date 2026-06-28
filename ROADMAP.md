@@ -82,7 +82,9 @@ Grouped, unordered. Pull into "Next steps" when ready.
 - [ ] Remember last settings (localStorage).
 
 ### Analysis quality
-- [ ] Key/pitch detection per harmonic component.
+- [x] Key/pitch detection per harmonic component — chroma + Krumhansl–Kessler key
+      correlation ([`pitch.ts`](src/dsp/pitch.ts)); each tonal part's card is labelled
+      with its estimated key. Percussive/atonal parts are left unlabelled.
 - [ ] Confidence/quality score so the UI can warn "this segment won't split well."
 
 ### Infra

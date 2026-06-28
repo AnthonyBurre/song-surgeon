@@ -6,6 +6,7 @@ import { decodeFile, toMono, cropChannels, toAudioBuffer, mixChannels, formatTim
 import { PlaybackEngine } from './ui/playback';
 import { renderComponents, type ComponentView } from './ui/components';
 import { snapToBars, type TempoResult, type CropSuggestion } from './dsp/tempo';
+import { analyzePitch } from './dsp/pitch';
 import type { LoopParams, StreamConfig } from './dsp/separate';
 import type {
   SeparateRequest,
@@ -452,7 +453,10 @@ function combineParts(indices: number[]): void {
   const kinds = new Set(members.map((m) => m.kind));
   const kind = kinds.size === 1 ? members[0].kind : 'mixed';
 
-  const combined: ComponentMessage = { channels, kind, energy: rms(channels[0]) };
+  // A combined part is tonal unless every member was percussive; analyze the
+  // summed audio on the main thread (one short clip — negligible cost).
+  const pitch = kind === 'percussive' ? undefined : analyzePitch(channels[0], resultSampleRate);
+  const combined: ComponentMessage = { channels, kind, energy: rms(channels[0]), pitch };
   const drop = new Set(sorted);
   const next: ComponentMessage[] = [];
   let inserted = false;
