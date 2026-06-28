@@ -2,6 +2,7 @@ import { stft, magnitude, reconstruct, type Stft } from './stft';
 import { hpssMasks } from './hpss';
 import { nmf, type NmfResult } from './nmf';
 import { loopTrim } from './loop';
+import { analyzePitch, type PitchResult } from './pitch';
 
 export type StreamKind = 'percussive' | 'harmonic';
 // A displayed part is one of the analysis streams, or 'mixed' once the user
@@ -52,6 +53,8 @@ export interface Component {
   kind: PartKind;
   /** RMS energy, used for ordering and display. */
   energy: number;
+  /** Estimated pitch / key; unpitched for percussive parts. */
+  pitch?: PitchResult;
 }
 
 export interface SeparationResult {
@@ -268,6 +271,7 @@ function renderComponent(
   mask: Float32Array,
   kind: PartKind,
   targetLength: number,
+  sampleRate: number,
   loop?: LoopParams,
 ): Component {
   const channels = channelStfts.map((s) => {
@@ -279,7 +283,10 @@ function renderComponent(
     }
     return sig;
   });
-  return { channels, kind, energy: rms(channels[0]) };
+  // Pitch of broadband percussion is meaningless, so only tonal streams are
+  // analyzed (the mask is applied per channel, so channel 0 is representative).
+  const pitch = kind === 'percussive' ? undefined : analyzePitch(channels[0], sampleRate);
+  return { channels, kind, energy: rms(channels[0]), pitch };
 }
 
 function channelStfts(channels: Float32Array[], analysis: Stft, fftSize: number, hop: number): Stft[] {
@@ -328,8 +335,8 @@ export function separate(
   const stfts = channelStfts(channels, sMono, params.fftSize, params.hop);
   const targetLength = mono.length;
   const components: Component[] = [
-    ...percMasks.map((m) => renderComponent(stfts, m, 'percussive', targetLength, params.loop)),
-    ...harmMasks.map((m) => renderComponent(stfts, m, 'harmonic', targetLength, params.loop)),
+    ...percMasks.map((m) => renderComponent(stfts, m, 'percussive', targetLength, sampleRate, params.loop)),
+    ...harmMasks.map((m) => renderComponent(stfts, m, 'harmonic', targetLength, sampleRate, params.loop)),
   ];
   onProgress?.(1, 'Done');
 
@@ -371,7 +378,7 @@ export function splitComponent(
 
   const stfts = channelStfts(channels, sMono, opts.fftSize, opts.hop);
   const targetLength = mono.length;
-  const components = masks.map((m) => renderComponent(stfts, m, kind, targetLength));
+  const components = masks.map((m) => renderComponent(stfts, m, kind, targetLength, sampleRate));
   onProgress?.(1, 'Done');
 
   components.sort((a, b) => b.energy - a.energy);

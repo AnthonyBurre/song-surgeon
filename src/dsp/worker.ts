@@ -1,5 +1,6 @@
 import { separate, splitComponent, type SeparationParams, type PartKind } from './separate';
 import { analyzeTempo, type TempoResult, type CropSuggestion } from './tempo';
+import type { PitchResult } from './pitch';
 
 export interface SeparateRequest {
   type: 'separate';
@@ -40,6 +41,7 @@ export interface ComponentMessage {
   channels: Float32Array[];
   kind: PartKind;
   energy: number;
+  pitch?: PitchResult;
 }
 
 export interface ResultMessage {
@@ -65,7 +67,7 @@ export type WorkerMessage = ProgressMessage | ResultMessage | SplitResultMessage
 
 const ctx = self as unknown as Worker;
 
-function toMessages(components: { channels: Float32Array[]; kind: PartKind; energy: number }[]): {
+function toMessages(components: { channels: Float32Array[]; kind: PartKind; energy: number; pitch?: PitchResult }[]): {
   payload: ComponentMessage[];
   transfers: Transferable[];
 } {
@@ -73,6 +75,7 @@ function toMessages(components: { channels: Float32Array[]; kind: PartKind; ener
     channels: c.channels,
     kind: c.kind,
     energy: c.energy,
+    pitch: c.pitch,
   }));
   const transfers = payload.flatMap((c) => c.channels.map((ch) => ch.buffer as ArrayBuffer));
   return { payload, transfers };
