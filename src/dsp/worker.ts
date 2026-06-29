@@ -1,5 +1,6 @@
 import { separate, splitComponent, type SeparationParams, type PartKind } from './separate';
 import { analyzeTempo, type TempoResult, type CropSuggestion } from './tempo';
+import { conformChannels } from './stretch';
 import type { PitchResult } from './pitch';
 
 export interface SeparateRequest {
@@ -29,7 +30,18 @@ export interface AnalyzeRequest {
   maxCropSeconds: number;
 }
 
-export type WorkerRequest = SeparateRequest | SplitRequest | AnalyzeRequest;
+export interface ConformRequest {
+  type: 'conform';
+  /** Echoed back so the caller can match a result to its request. */
+  id: number;
+  channels: Float32Array[];
+  /** Output length = round(input length · timeRatio) — i.e. tempo scaling. */
+  timeRatio: number;
+  /** Pitch shift in semitones (0 = none). */
+  semitones: number;
+}
+
+export type WorkerRequest = SeparateRequest | SplitRequest | AnalyzeRequest | ConformRequest;
 
 export interface ProgressMessage {
   type: 'progress';
@@ -63,7 +75,18 @@ export interface AnalysisMessage {
   suggestion: CropSuggestion;
 }
 
-export type WorkerMessage = ProgressMessage | ResultMessage | SplitResultMessage | AnalysisMessage;
+export interface ConformResultMessage {
+  type: 'conform-result';
+  id: number;
+  channels: Float32Array[];
+}
+
+export type WorkerMessage =
+  | ProgressMessage
+  | ResultMessage
+  | SplitResultMessage
+  | AnalysisMessage
+  | ConformResultMessage;
 
 const ctx = self as unknown as Worker;
 
@@ -89,6 +112,17 @@ ctx.onmessage = (e: MessageEvent<WorkerRequest>) => {
   if (req.type === 'analyze') {
     const { tempo, suggestion } = analyzeTempo(req.signal, req.sampleRate, req.maxCropSeconds);
     ctx.postMessage({ type: 'analysis', tempo, suggestion } satisfies AnalysisMessage);
+    return;
+  }
+
+  if (req.type === 'conform') {
+    progress(0.05, 'Conforming');
+    const channels = conformChannels(req.channels, req.timeRatio, req.semitones);
+    progress(1, 'Done');
+    ctx.postMessage(
+      { type: 'conform-result', id: req.id, channels } satisfies ConformResultMessage,
+      channels.map((c) => c.buffer as ArrayBuffer),
+    );
     return;
   }
 

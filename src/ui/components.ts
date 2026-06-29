@@ -46,11 +46,21 @@ export interface ComponentCallbacks {
   onSelectionChange: (indices: number[]) => void;
 }
 
-const KIND_META = {
+export const KIND_META = {
   percussive: { word: 'Percussive', tag: 'P', cls: 'kind-perc', color: '#ff8a5c' },
   harmonic: { word: 'Harmonic', tag: 'H', cls: 'kind-harm', color: '#5cc8ff' },
   mixed: { word: 'Mixed', tag: 'M', cls: 'kind-mixed', color: '#7c9aff' },
 } as const;
+
+// Per-component display labels ("Percussive 1", "Harmonic 2", …) numbered within
+// each kind, in array order — matching what the result cards show.
+export function componentLabels(components: { kind: ComponentMessage['kind'] }[]): string[] {
+  const counts: Record<string, number> = { percussive: 0, harmonic: 0, mixed: 0 };
+  return components.map((c) => {
+    counts[c.kind] += 1;
+    return `${KIND_META[c.kind].word} ${counts[c.kind]}`;
+  });
+}
 
 export function renderComponents(
   root: HTMLElement,

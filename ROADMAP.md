@@ -44,6 +44,23 @@ A living document for where Song Surgeon is going. Sections:
       part (no re-analysis); mixing across streams yields a 'mixed' part. The inverse of
       Split, so over-/under-segmentation is recoverable in both directions.
 
+**v2 (shipped)** — two-song transition builder.
+
+- [x] Two song "decks" — the single-song pipeline (load → crop → tempo → decompose → solo)
+      is refactored into a reusable `Deck` class ([`deck.ts`](src/ui/deck.ts)) instantiated for a
+      lead-in (A) and follow-up (B) song, laid out side-by-side ([`main.ts`](src/main.ts)).
+- [x] Suggested analogues — cross-song matching pairs each loop with its closest counterpart
+      in the other song ([`match.ts`](src/dsp/match.ts)): chroma cosine for tonal parts, log-band
+      spectral-envelope cosine for percussion. Rendered as selectable pairs ([`matcher.ts`](src/ui/matcher.ts)).
+- [x] Time-stretch + pitch-shift — a phase vocoder over the existing STFT
+      ([`stretch.ts`](src/dsp/stretch.ts)) conforms each song to a single target tempo/key so loops
+      line up and the transition→song boundaries stay seamless. Runs in the worker; results cached.
+- [x] Transition composer — pick loops, set repeat counts and entrance/exit (fade or hard cut)
+      per loop ([`composer.ts`](src/ui/composer.ts)); A-side loops default to fade-out, B-side to fade-in.
+- [x] Full-composition render — `OfflineAudioContext` assembles conformed A-body → transition
+      bridge → conformed B-body (or transition-only) into one buffer ([`arrangement.ts`](src/audio/arrangement.ts))
+      for identical playback and `.wav` download ([`master.ts`](src/ui/master.ts)).
+
 ---
 
 ## Next steps
@@ -58,7 +75,7 @@ Roughly in priority order. Check off as they land.
       tiny ones so the count reflects musical structure. (Spectral-cosine clustering only;
       grouping *different* drums like kick + snare into one loop is still open.)
 - [x] **Stereo output** — apply the mono-derived masks to both channels instead of collapsing.
-- [ ] **First git commit** + enable Pages → "GitHub Actions" in repo settings.
+- [x] **First git commit** + enable Pages → "GitHub Actions" in repo settings.
 
 ---
 
@@ -95,7 +112,7 @@ Grouped, unordered. Pull into "Next steps" when ready.
 
 ## Tuning knobs (where to refine)
 
-The "prompts" you give the algorithm. These are the levers that change output quality — adjust
+These are the levers that change output quality — adjust
 here when results aren't separating well. Defaults live in
 [`DEFAULT_PARAMS`](src/dsp/separate.ts) and the call site in [`main.ts`](src/main.ts).
 
