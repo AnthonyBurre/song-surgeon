@@ -241,18 +241,14 @@ body {
   margin-bottom: 1.1rem;
   background: rgba(255, 255, 255, 0.015);
 }
-.manual {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
+.option-input {
+  background: var(--panel-2);
   color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
   font-size: 0.9rem;
-  margin-bottom: 1rem;
-  cursor: pointer;
-}
-.control-grid.disabled {
-  opacity: 0.45;
-  pointer-events: none;
 }
 .control-grid {
   display: flex;

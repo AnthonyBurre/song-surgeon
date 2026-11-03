@@ -11,17 +11,14 @@ import {
 } from '../audio/audioUtils';
 import { PlaybackEngine } from './playback';
 import { renderComponents, type ComponentView } from './components';
-import { stepper } from './stepper';
+import { renderOptions } from './options';
 import { snapToBars, type TempoResult, type CropSuggestion } from '../dsp/tempo';
 import { analyzePitch } from '../dsp/pitch';
-import type { LoopParams, StreamConfig } from '../dsp/separate';
-import type {
-  SeparateRequest,
-  SplitRequest,
-  AnalyzeRequest,
-  ComponentMessage,
-  WorkerMessage,
-} from '../dsp/worker';
+import type { LoopParams } from '../dsp/separate';
+import type { AnalyzeRequest, WorkerMessage } from '../dsp/worker';
+import { BuiltinEngine } from '../engine/builtin';
+import { finishParts } from '../engine/finish';
+import { defaultOptions, type OptionValues, type Part, type SeparationEngine } from '../engine/types';
 
 export const MAX_CROP_SECONDS = 20;
 // Wrap-around crossfade applied when trimming components to whole bars.
@@ -41,6 +38,8 @@ export interface DeckOptions {
   subtitle: string;
   /** Fired whenever this deck's components / tempo / crop change. */
   onChange?: () => void;
+  /** Separation engine; defaults to the built-in in-browser NMF engine. */
+  separator?: SeparationEngine;
 }
 
 // One self-contained song pipeline: load → crop (waveform + tempo) → decompose →
@@ -54,21 +53,22 @@ export class Deck {
   decoded: AudioBuffer | null = null;
   region: RegionLike | null = null;
   tempo: TempoResult | null = null;
-  components: ComponentMessage[] = [];
+  components: Part[] = [];
   resultSampleRate = 44100;
 
   private ws: WaveSurfer | null = null;
   private suggestion: CropSuggestion | null = null;
   private suggestionApplied = false;
-  private percComp = 2;
-  private harmComp = 2;
   private selection: number[] = []; // card indices ticked for combining
   private busy = false; // a decompose or split is running
   private snapping = false; // guards recursive snap-on-region-update
 
   private engine = new PlaybackEngine();
   private view: ComponentView | null = null;
+  // Tempo analysis stays on its own worker; separation goes through the engine.
   private worker: Worker;
+  private separator: SeparationEngine;
+  private separatorOptions: OptionValues;
 
   // --- Element refs ---
   private els: {
@@ -87,10 +87,7 @@ export class Deck {
     useSuggestion: HTMLButtonElement;
     advancedToggle: HTMLButtonElement;
     advanced: HTMLElement;
-    manualBox: HTMLInputElement;
-    manualControls: HTMLElement;
-    ctrlPerc: HTMLElement;
-    ctrlHarm: HTMLElement;
+    engineOptions: HTMLElement;
     decompose: HTMLButtonElement;
     progress: HTMLElement;
     progressFill: HTMLElement;
@@ -107,6 +104,8 @@ export class Deck {
     this.id = opts.id;
     this.onChange = opts.onChange;
     this.worker = new Worker(new URL('../dsp/worker.ts', import.meta.url), { type: 'module' });
+    this.separator = opts.separator ?? new BuiltinEngine();
+    this.separatorOptions = defaultOptions(this.separator.info);
 
     root.innerHTML = `
       <div class="deck">
@@ -143,11 +142,7 @@ export class Deck {
           <p class="auto-note">The number of parts is chosen automatically. You can split any part
             again afterwards. <button class="link advanced-toggle" type="button">Advanced</button></p>
           <div class="advanced hidden">
-            <label class="manual"><input type="checkbox" class="manual-mode" /> Set the part counts manually</label>
-            <div class="control-grid">
-              <div class="control ctrl-perc"></div>
-              <div class="control ctrl-harm"></div>
-            </div>
+            <div class="control-grid engine-options"></div>
           </div>
           <button class="btn primary decompose" type="button">Decompose</button>
           <div class="progress hidden">
@@ -186,10 +181,7 @@ export class Deck {
       useSuggestion: q<HTMLButtonElement>('.use-suggestion'),
       advancedToggle: q<HTMLButtonElement>('.advanced-toggle'),
       advanced: q('.advanced'),
-      manualBox: q<HTMLInputElement>('.manual-mode'),
-      manualControls: q('.control-grid'),
-      ctrlPerc: q('.ctrl-perc'),
-      ctrlHarm: q('.ctrl-harm'),
+      engineOptions: q('.engine-options'),
       decompose: q<HTMLButtonElement>('.decompose'),
       progress: q('.progress'),
       progressFill: q('.fill'),
@@ -236,17 +228,12 @@ export class Deck {
   private wireEvents(): void {
     const e = this.els;
 
-    stepper(e.ctrlPerc, 'Percussive parts', () => this.percComp, (v) => (this.percComp = v), 0, 4);
-    stepper(e.ctrlHarm, 'Harmonic parts', () => this.harmComp, (v) => (this.harmComp = v), 0, 4);
+    renderOptions(e.engineOptions, this.separator.info.options, this.separatorOptions);
 
     e.advancedToggle.addEventListener('click', () => {
       const hidden = e.advanced.classList.toggle('hidden');
       e.advancedToggle.textContent = hidden ? 'Advanced' : 'Hide advanced';
     });
-
-    const syncManualState = () => e.manualControls.classList.toggle('disabled', !e.manualBox.checked);
-    e.manualBox.addEventListener('change', syncManualState);
-    syncManualState();
 
     e.browse.addEventListener('click', () => e.fileInput.click());
     e.fileInput.addEventListener('change', () => {
@@ -284,7 +271,7 @@ export class Deck {
       else this.ws.play();
     });
 
-    e.decompose.addEventListener('click', () => this.decompose());
+    e.decompose.addEventListener('click', () => void this.decompose());
     e.playAll.addEventListener('click', () => void this.engine.play());
     e.stopAll.addEventListener('click', () => this.engine.stop());
     e.combine.addEventListener('click', () => this.combineParts(this.selection));
@@ -438,16 +425,14 @@ export class Deck {
     this.els.progressLabel.textContent = `${stage}… ${Math.round(fraction * 100)}%`;
   }
 
-  private decompose(): void {
+  private showMessage(text: string): void {
+    this.els.progressFill.style.width = '0%';
+    this.els.progressLabel.textContent = text;
+    this.els.progress.classList.remove('hidden');
+  }
+
+  private async decompose(): Promise<void> {
     if (!this.decoded || !this.region || this.busy) return;
-    const manual = this.els.manualBox.checked;
-    if (manual && this.percComp + this.harmComp < 1) {
-      this.els.progressLabel.textContent = 'Pick at least one part.';
-      this.els.progress.classList.remove('hidden');
-      return;
-    }
-    const percussive: StreamConfig = manual ? { mode: 'manual', count: this.percComp } : { mode: 'auto' };
-    const harmonic: StreamConfig = manual ? { mode: 'manual', count: this.harmComp } : { mode: 'auto' };
 
     const sr = this.decoded.sampleRate;
     let start = this.region.start;
@@ -473,51 +458,57 @@ export class Deck {
 
     const channels = cropChannels(this.decoded, start, cropSamples);
     if ((channels[0]?.length ?? 0) < 2048) {
-      this.els.progressLabel.textContent = 'Selection is too short.';
-      this.els.progress.classList.remove('hidden');
+      this.showMessage('Selection is too short.');
       return;
     }
 
     this.busy = true;
     this.els.decompose.disabled = true;
     this.showProgress(0, 'Starting');
-    const request: SeparateRequest = {
-      type: 'separate',
-      channels,
-      sampleRate: sr,
-      params: {
-        fftSize: 2048,
-        hop: 512,
-        iterations: 80,
-        percussive,
-        harmonic,
-        loop,
-      },
-    };
-    this.worker.postMessage(request, channels.map((c) => c.buffer));
+    try {
+      const raw = await this.separator.separate(
+        { channels, sampleRate: sr, options: this.separatorOptions },
+        { onProgress: (f, stage) => this.showProgress(f, stage) },
+      );
+      const result = finishParts(raw, loop);
+      if (result.parts.length === 0) {
+        this.showMessage('No parts were produced. Pick at least one part under Advanced.');
+        return;
+      }
+      this.els.progress.classList.add('hidden');
+      this.components = result.parts;
+      this.resultSampleRate = result.sampleRate;
+      this.renderResults();
+      this.els.resultsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (err) {
+      this.showMessage(`Separation failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.busy = false;
+      this.els.decompose.disabled = false;
+    }
   }
 
-  private requestSplit(index: number): void {
-    if (this.busy) return;
+  private async requestSplit(index: number): Promise<void> {
+    if (this.busy || !this.separator.split) return;
     const comp = this.components[index];
     if (!comp) return;
     this.busy = true;
     this.showProgress(0, 'Splitting');
-    const request: SplitRequest = {
-      type: 'split',
-      id: index,
-      channels: comp.channels.map((c) => c.slice()),
-      sampleRate: this.resultSampleRate,
-      kind: comp.kind,
-      count: 2,
-      fftSize: 2048,
-      hop: 512,
-      iterations: 80,
-    };
-    this.worker.postMessage(
-      request,
-      request.channels.map((c) => c.buffer),
-    );
+    try {
+      const raw = await this.separator.split(
+        { channels: comp.channels, sampleRate: this.resultSampleRate, kind: comp.kind, count: 2 },
+        { onProgress: (f, stage) => this.showProgress(f, stage) },
+      );
+      // The parent was already loop-trimmed, so its sub-parts need no trim.
+      const result = finishParts(raw);
+      this.els.progress.classList.add('hidden');
+      this.components.splice(index, 1, ...result.parts);
+      this.renderResults();
+    } catch (err) {
+      this.showMessage(`Split failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      this.busy = false;
+    }
   }
 
   private combineParts(indices: number[]): void {
@@ -529,9 +520,10 @@ export class Deck {
     const kind = kinds.size === 1 ? members[0].kind : 'mixed';
 
     const pitch = kind === 'percussive' ? undefined : analyzePitch(channels[0], this.resultSampleRate);
-    const combined: ComponentMessage = { channels, kind, energy: rms(channels[0]), pitch };
+    const label = members.map((m) => m.label).join(' + ');
+    const combined: Part = { channels, kind, label, energy: rms(channels[0]), pitch };
     const drop = new Set(sorted);
-    const next: ComponentMessage[] = [];
+    const next: Part[] = [];
     let inserted = false;
     this.components.forEach((comp, i) => {
       if (drop.has(i)) {
@@ -570,7 +562,7 @@ export class Deck {
     const buffers = this.components.map((c) => toAudioBuffer(c.channels, this.resultSampleRate));
     this.engine.setTracks(buffers);
     this.view = renderComponents(this.els.cards, this.components, this.engine, this.resultSampleRate, {
-      onSplit: (index) => this.requestSplit(index),
+      onSplit: (index) => void this.requestSplit(index),
       onSelectionChange: (indices) => {
         this.selection = indices;
         this.updateCombineButton();
@@ -595,19 +587,6 @@ export class Deck {
       this.updateCropInfo();
       this.els.useSuggestion.hidden = false;
       this.maybeApplySuggestion();
-    } else if (msg.type === 'result') {
-      this.busy = false;
-      this.els.decompose.disabled = false;
-      this.els.progress.classList.add('hidden');
-      this.components = msg.components;
-      this.resultSampleRate = msg.sampleRate;
-      this.renderResults();
-      this.els.resultsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    } else if (msg.type === 'split-result') {
-      this.busy = false;
-      this.els.progress.classList.add('hidden');
-      this.components.splice(msg.id, 1, ...msg.components);
-      this.renderResults();
     }
   }
 
