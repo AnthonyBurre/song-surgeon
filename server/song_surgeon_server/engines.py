@@ -58,6 +58,11 @@ class DemucsEngine:
 
     id = "demucs"
 
+    # Longest selection accepted, in seconds. Demucs processes in chunks so it
+    # copes with whole songs; this bounds upload size and memory (5 min of stereo
+    # float audio is ~100 MB each way).
+    MAX_SECONDS = 300
+
     MODELS = [
         ("htdemucs", "4 stems (drums, bass, vocals, other)"),
         ("htdemucs_6s", "6 stems (adds guitar, piano)"),
@@ -74,6 +79,7 @@ class DemucsEngine:
             "name": f"Demucs stems (local, {self.device.upper()})",
             "description": "Splits the selection into instrument stems with a neural network running on this computer.",
             "runtime": "local-server",
+            "maxSeconds": self.MAX_SECONDS,
             "canSplit": False,
             "options": [
                 {
@@ -113,6 +119,9 @@ class DemucsEngine:
         valid = {v for v, _ in self.MODELS}
         name = options.get("model") if options.get("model") in valid else "htdemucs"
         shifts = int(np.clip(int(options.get("shifts", 1)), 0, 5))
+        # One second of slack: the browser appends a short loop-crossfade tail.
+        if audio.shape[1] > (self.MAX_SECONDS + 1) * sample_rate:
+            raise ValueError(f"Selection is longer than {self.MAX_SECONDS // 60} minutes")
         model = self._model(name, progress)
 
         progress(0.15, "Separating stems")

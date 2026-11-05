@@ -13,7 +13,7 @@ import type { EngineInfo, EngineResult, OptionValues, Part, RunOptions, Separate
 const FFT_SIZE = 2048;
 const HOP = 512;
 const ITERATIONS = 80;
-// Kept in step with MAX_CROP_SECONDS in deck.ts — compute scales with length.
+// Longest selection this engine accepts — NMF compute scales with length.
 const MAX_SECONDS = 20;
 
 const countChoices = [

@@ -20,7 +20,9 @@ import { BuiltinEngine } from '../engine/builtin';
 import { finishParts } from '../engine/finish';
 import { defaultOptions, type OptionValues, type Part, type SeparationEngine } from '../engine/types';
 
-export const MAX_CROP_SECONDS = 20;
+// Starting selection length, and the longest loop the tempo pass suggests. The
+// actual cap on a selection comes from the current engine (`maxCrop`).
+const DEFAULT_CROP_SECONDS = 20;
 // Wrap-around crossfade applied when trimming components to whole bars.
 const LOOP_CROSSFADE_SEC = 0.012;
 
@@ -59,6 +61,7 @@ export class Deck {
   private suggestionApplied = false;
   private selection: number[] = []; // card indices ticked for combining
   private busy = false; // a decompose or split is running
+  private job: AbortController | null = null; // cancels the running decompose/split
   private snapping = false; // guards recursive snap-on-region-update
 
   private engine = new PlaybackEngine();
@@ -95,6 +98,7 @@ export class Deck {
     progress: HTMLElement;
     progressFill: HTMLElement;
     progressLabel: HTMLElement;
+    cancel: HTMLButtonElement;
     playAll: HTMLButtonElement;
     stopAll: HTMLButtonElement;
     combine: HTMLButtonElement;
@@ -118,7 +122,7 @@ export class Deck {
         <section class="dropzone">
           <input type="file" class="file" accept="audio/*" hidden />
           <p class="drop-main">Drop an audio file here, or <button class="link browse" type="button">browse</button></p>
-          <p class="hint">Works best on short, loop-based segments. Selections are capped at ${MAX_CROP_SECONDS}s.</p>
+          <p class="hint"></p>
         </section>
 
         <section class="panel source hidden">
@@ -153,6 +157,7 @@ export class Deck {
           <div class="progress hidden">
             <div class="bar"><div class="fill"></div></div>
             <span class="progress-label"></span>
+            <button class="btn ghost cancel hidden" type="button">Cancel</button>
           </div>
         </section>
 
@@ -194,6 +199,7 @@ export class Deck {
       progress: q('.progress'),
       progressFill: q('.fill'),
       progressLabel: q('.progress-label'),
+      cancel: q<HTMLButtonElement>('.cancel'),
       playAll: q<HTMLButtonElement>('.play-all'),
       stopAll: q<HTMLButtonElement>('.stop-all'),
       combine: q<HTMLButtonElement>('.combine'),
@@ -284,6 +290,7 @@ export class Deck {
     });
 
     e.decompose.addEventListener('click', () => void this.decompose());
+    e.cancel.addEventListener('click', () => this.job?.abort());
     e.playAll.addEventListener('click', () => void this.engine.play());
     e.stopAll.addEventListener('click', () => this.engine.stop());
     e.combine.addEventListener('click', () => this.combineParts(this.selection));
@@ -305,6 +312,26 @@ export class Deck {
     this.separatorOptions = defaultOptions(engine.info);
     this.els.engineDesc.textContent = engine.info.description ?? '';
     renderOptions(this.els.engineOptions, engine.info.options, this.separatorOptions);
+    this.updateHint();
+    // Switching to an engine with a smaller cap trims the selection to fit.
+    if (this.region && this.region.end - this.region.start > this.maxCrop) {
+      this.applyRegion(this.region.start, this.region.start + this.maxCrop);
+      this.snapRegionLive();
+      this.updateCropInfo();
+    }
+  }
+
+  /** Longest selection the current engine accepts, in seconds. */
+  private get maxCrop(): number {
+    return this.separator.info.maxSeconds ?? Infinity;
+  }
+
+  private updateHint(): void {
+    const hint = this.els.dropzone.querySelector('.hint');
+    if (!hint) return;
+    const cap = this.maxCrop;
+    const limit = !Number.isFinite(cap) ? '' : ` Selections are capped at ${cap >= 60 ? `${cap / 60} min` : `${cap}s`}.`;
+    hint.textContent = `Works best on short, loop-based segments.${limit}`;
   }
 
   /** Splitting re-runs on one part's audio, so any engine that supports it will do. */
@@ -333,7 +360,7 @@ export class Deck {
       return;
     }
     this.els.dropzone.classList.remove('error');
-    if (hint) hint.textContent = `Works best on short, loop-based segments. Selections are capped at ${MAX_CROP_SECONDS}s.`;
+    this.updateHint();
     this.loadWaveform(file, this.decoded.duration);
     this.els.sourcePanel.classList.remove('hidden');
     this.els.controlsPanel.classList.remove('hidden');
@@ -343,7 +370,7 @@ export class Deck {
       type: 'analyze',
       signal: mono,
       sampleRate: this.decoded.sampleRate,
-      maxCropSeconds: MAX_CROP_SECONDS,
+      maxCropSeconds: DEFAULT_CROP_SECONDS,
     };
     this.worker.postMessage(analyzeReq);
     this.onChange?.();
@@ -367,7 +394,7 @@ export class Deck {
       regions.clearRegions();
       this.region = regions.addRegion({
         start: 0,
-        end: Math.min(duration, MAX_CROP_SECONDS),
+        end: Math.min(duration, DEFAULT_CROP_SECONDS, this.maxCrop),
         color: 'rgba(124, 154, 255, 0.18)',
         drag: true,
         resize: true,
@@ -388,8 +415,8 @@ export class Deck {
   }
 
   private enforceMaxCrop(): void {
-    if (this.region && this.region.end - this.region.start > MAX_CROP_SECONDS) {
-      this.region.end = this.region.start + MAX_CROP_SECONDS;
+    if (this.region && this.region.end - this.region.start > this.maxCrop) {
+      this.region.end = this.region.start + this.maxCrop;
     }
   }
 
@@ -418,7 +445,7 @@ export class Deck {
       this.region.start,
       this.region.end,
       this.decoded.duration,
-      MAX_CROP_SECONDS,
+      this.maxCrop,
     );
     if (Math.abs(s.start - this.region.start) < 1e-4 && Math.abs(s.end - this.region.end) < 1e-4)
       return;
@@ -465,6 +492,29 @@ export class Deck {
     this.els.progress.classList.remove('hidden');
   }
 
+  // Mark a decompose/split as running; the returned signal fires on Cancel.
+  private startJob(stage: string): AbortSignal {
+    this.busy = true;
+    this.job = new AbortController();
+    this.els.decompose.disabled = true;
+    this.els.cancel.classList.remove('hidden');
+    this.showProgress(0, stage);
+    return this.job.signal;
+  }
+
+  private endJob(): void {
+    this.busy = false;
+    this.job = null;
+    this.els.decompose.disabled = false;
+    this.els.cancel.classList.add('hidden');
+  }
+
+  private showJobError(err: unknown, what: string): void {
+    // Engines reject with the signal's AbortError when the user cancels.
+    if (err instanceof DOMException && err.name === 'AbortError') this.showMessage(`${what} cancelled.`);
+    else this.showMessage(`${what} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   private async decompose(): Promise<void> {
     if (!this.decoded || !this.region || this.busy) return;
 
@@ -475,7 +525,7 @@ export class Deck {
     let cropSamples: number;
 
     if (this.els.snapBox.checked && this.tempo) {
-      const snapped = snapToBars(this.tempo, start, end, this.decoded.duration, MAX_CROP_SECONDS);
+      const snapped = snapToBars(this.tempo, start, end, this.decoded.duration, this.maxCrop);
       start = snapped.start;
       end = snapped.end;
       this.applyRegion(start, end);
@@ -496,13 +546,11 @@ export class Deck {
       return;
     }
 
-    this.busy = true;
-    this.els.decompose.disabled = true;
-    this.showProgress(0, 'Starting');
+    const signal = this.startJob('Starting');
     try {
       const raw = await this.separator.separate(
         { channels, sampleRate: sr, options: this.separatorOptions },
-        { onProgress: (f, stage) => this.showProgress(f, stage) },
+        { onProgress: (f, stage) => this.showProgress(f, stage), signal },
       );
       const result = finishParts(raw, loop);
       if (result.parts.length === 0) {
@@ -515,10 +563,9 @@ export class Deck {
       this.renderResults();
       this.els.resultsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (err) {
-      this.showMessage(`Separation failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.showJobError(err, 'Separation');
     } finally {
-      this.busy = false;
-      this.els.decompose.disabled = false;
+      this.endJob();
     }
   }
 
@@ -527,12 +574,11 @@ export class Deck {
     if (this.busy || !splitter?.split) return;
     const comp = this.components[index];
     if (!comp) return;
-    this.busy = true;
-    this.showProgress(0, 'Splitting');
+    const signal = this.startJob('Splitting');
     try {
       const raw = await splitter.split(
         { channels: comp.channels, sampleRate: this.resultSampleRate, kind: comp.kind, count: 2 },
-        { onProgress: (f, stage) => this.showProgress(f, stage) },
+        { onProgress: (f, stage) => this.showProgress(f, stage), signal },
       );
       // The parent was already loop-trimmed, so its sub-parts need no trim.
       const result = finishParts(raw);
@@ -542,9 +588,9 @@ export class Deck {
       this.components.splice(index, 1, ...parts);
       this.renderResults();
     } catch (err) {
-      this.showMessage(`Split failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.showJobError(err, 'Split');
     } finally {
-      this.busy = false;
+      this.endJob();
     }
   }
 
