@@ -116,6 +116,83 @@ export function encodeWav(channels: Float32Array[], sampleRate: number): Blob {
   return new Blob([buffer], { type: 'audio/wav' });
 }
 
+// Lossless 32-bit float WAV — the wire format for local engine servers (16-bit
+// would add quantization noise on every round-trip).
+export function encodeFloatWav(channels: Float32Array[], sampleRate: number): Blob {
+  const numChannels = Math.max(1, channels.length);
+  const frames = channels[0]?.length ?? 0;
+  const blockAlign = numChannels * 4;
+  const dataBytes = frames * blockAlign;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 3, true); // IEEE float
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 32, true);
+  writeString(36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  let offset = 44;
+  for (let i = 0; i < frames; i++) {
+    for (let c = 0; c < numChannels; c++) {
+      view.setFloat32(offset, channels[c][i], true);
+      offset += 4;
+    }
+  }
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// Decode a 32-bit float WAV into planar channels at its native rate. (The Web
+// Audio decoder would resample to the context's rate, shifting loop lengths.)
+// Walks the RIFF chunks, so extra chunks such as `fact` are skipped.
+export function decodeFloatWav(bytes: ArrayBuffer): { channels: Float32Array[]; sampleRate: number } {
+  const view = new DataView(bytes);
+  const tag = (offset: number) => String.fromCharCode(...new Uint8Array(bytes, offset, 4));
+  if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new Error('Not a WAV file');
+
+  let numChannels = 0;
+  let sampleRate = 0;
+  let offset = 12;
+  while (offset + 8 <= bytes.byteLength) {
+    const id = tag(offset);
+    const size = view.getUint32(offset + 4, true);
+    const body = offset + 8;
+    if (id === 'fmt ') {
+      const format = view.getUint16(body, true);
+      // 0xFFFE = WAVE_FORMAT_EXTENSIBLE; its sub-format GUID starts with the real code.
+      const code = format === 0xfffe ? view.getUint16(body + 24, true) : format;
+      if (code !== 3 || view.getUint16(body + 14, true) !== 32) throw new Error('Expected 32-bit float WAV');
+      numChannels = view.getUint16(body + 2, true);
+      sampleRate = view.getUint32(body + 4, true);
+    } else if (id === 'data') {
+      if (!numChannels) throw new Error('WAV data before fmt chunk');
+      const frames = Math.floor(size / (4 * numChannels));
+      const channels = Array.from({ length: numChannels }, () => new Float32Array(frames));
+      let p = body;
+      for (let i = 0; i < frames; i++) {
+        for (let c = 0; c < numChannels; c++) {
+          channels[c][i] = view.getFloat32(p, true);
+          p += 4;
+        }
+      }
+      return { channels, sampleRate };
+    }
+    offset = body + size + (size % 2); // chunks are word-aligned
+  }
+  throw new Error('WAV has no data chunk');
+}
+
 export function formatTime(sec: number): string {
   if (!isFinite(sec)) return '0:00';
   const m = Math.floor(sec / 60);

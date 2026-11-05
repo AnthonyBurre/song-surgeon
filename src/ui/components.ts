@@ -1,4 +1,4 @@
-import type { ComponentMessage } from '../dsp/worker';
+import type { Part } from '../engine/types';
 import type { PlaybackEngine } from './playback';
 import { encodeWav } from '../audio/audioUtils';
 
@@ -41,7 +41,8 @@ export interface ComponentView {
 }
 
 export interface ComponentCallbacks {
-  onSplit: (index: number) => void;
+  /** Omit when the engine can't split; the Split buttons are then hidden. */
+  onSplit?: (index: number) => void;
   /** Called with the sorted indices of cards ticked for combining. */
   onSelectionChange: (indices: number[]) => void;
 }
@@ -52,19 +53,24 @@ export const KIND_META = {
   mixed: { word: 'Mixed', tag: 'M', cls: 'kind-mixed', color: '#7c9aff' },
 } as const;
 
-// Per-component display labels ("Percussive 1", "Harmonic 2", …) numbered within
-// each kind, in array order — matching what the result cards show.
-export function componentLabels(components: { kind: ComponentMessage['kind'] }[]): string[] {
-  const counts: Record<string, number> = { percussive: 0, harmonic: 0, mixed: 0 };
-  return components.map((c) => {
-    counts[c.kind] += 1;
-    return `${KIND_META[c.kind].word} ${counts[c.kind]}`;
+// Per-part display labels, in array order — matching what the result cards show.
+// Engine labels are used as-is when unique ("Drums", "Bass") and numbered when
+// repeated ("Percussive 1", "Percussive 2").
+export function componentLabels(parts: { label: string }[]): string[] {
+  const totals = new Map<string, number>();
+  for (const p of parts) totals.set(p.label, (totals.get(p.label) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return parts.map((p) => {
+    if (totals.get(p.label) === 1) return p.label;
+    const n = (seen.get(p.label) ?? 0) + 1;
+    seen.set(p.label, n);
+    return `${p.label} ${n}`;
   });
 }
 
 export function renderComponents(
   root: HTMLElement,
-  components: ComponentMessage[],
+  components: Part[],
   engine: PlaybackEngine,
   sampleRate: number,
   callbacks: ComponentCallbacks,
@@ -80,11 +86,12 @@ export function renderComponents(
   const emitSelection = () =>
     callbacks.onSelectionChange([...selected].sort((a, b) => a - b));
 
+  const labels = componentLabels(components);
   components.forEach((comp, i) => {
     const meta = KIND_META[comp.kind];
     counts[comp.kind] += 1;
     const n = counts[comp.kind];
-    const label = `${meta.word} ${n}`;
+    const label = labels[i];
     // A detected key for tonal parts; analyzePitch already collapses unpitched /
     // low-confidence results to "—", so anything else is worth showing.
     const key = comp.pitch && comp.pitch.name !== '—' ? comp.pitch.name : '';
@@ -100,7 +107,7 @@ export function renderComponents(
         <div class="card-actions">
           <button class="btn solo" type="button">Solo</button>
           <button class="btn mute" type="button">Mute</button>
-          <button class="btn split" type="button" title="Break this part into two">Split</button>
+          ${callbacks.onSplit ? '<button class="btn split" type="button" title="Break this part into two">Split</button>' : ''}
           <button class="btn ghost dl" type="button">Download</button>
         </div>
       </div>
@@ -115,7 +122,7 @@ export function renderComponents(
     const selectBox = card.querySelector<HTMLInputElement>('.select')!;
     const solo = card.querySelector<HTMLButtonElement>('.solo')!;
     const mute = card.querySelector<HTMLButtonElement>('.mute')!;
-    const split = card.querySelector<HTMLButtonElement>('.split')!;
+    const split = card.querySelector<HTMLButtonElement>('.split');
     const dl = card.querySelector<HTMLButtonElement>('.dl')!;
 
     canvases.push(canvas);
@@ -133,7 +140,7 @@ export function renderComponents(
     });
     solo.addEventListener('click', () => engine.toggleSolo(i));
     mute.addEventListener('click', () => engine.toggleMute(i));
-    split.addEventListener('click', () => callbacks.onSplit(i));
+    split?.addEventListener('click', () => callbacks.onSplit?.(i));
     dl.addEventListener('click', () => {
       const blob = encodeWav(comp.channels, sampleRate);
       const url = URL.createObjectURL(blob);

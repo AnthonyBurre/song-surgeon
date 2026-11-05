@@ -38,8 +38,6 @@ export interface DeckOptions {
   subtitle: string;
   /** Fired whenever this deck's components / tempo / crop change. */
   onChange?: () => void;
-  /** Separation engine; defaults to the built-in in-browser NMF engine. */
-  separator?: SeparationEngine;
 }
 
 // One self-contained song pipeline: load → crop (waveform + tempo) → decompose →
@@ -65,10 +63,12 @@ export class Deck {
 
   private engine = new PlaybackEngine();
   private view: ComponentView | null = null;
-  // Tempo analysis stays on its own worker; separation goes through the engine.
+  // Tempo analysis stays on its own worker; separation goes through an engine.
+  // The built-in engine is always first; server engines are added once discovered.
   private worker: Worker;
-  private separator: SeparationEngine;
-  private separatorOptions: OptionValues;
+  private separators: SeparationEngine[] = [new BuiltinEngine()];
+  private separator = this.separators[0];
+  private separatorOptions: OptionValues = defaultOptions(this.separator.info);
 
   // --- Element refs ---
   private els: {
@@ -88,6 +88,9 @@ export class Deck {
     advancedToggle: HTMLButtonElement;
     advanced: HTMLElement;
     engineOptions: HTMLElement;
+    enginePick: HTMLElement;
+    engineSelect: HTMLSelectElement;
+    engineDesc: HTMLElement;
     decompose: HTMLButtonElement;
     progress: HTMLElement;
     progressFill: HTMLElement;
@@ -104,8 +107,6 @@ export class Deck {
     this.id = opts.id;
     this.onChange = opts.onChange;
     this.worker = new Worker(new URL('../dsp/worker.ts', import.meta.url), { type: 'module' });
-    this.separator = opts.separator ?? new BuiltinEngine();
-    this.separatorOptions = defaultOptions(this.separator.info);
 
     root.innerHTML = `
       <div class="deck">
@@ -139,8 +140,12 @@ export class Deck {
 
         <section class="panel controls hidden">
           <h3>2 · Choose the breakdown</h3>
-          <p class="auto-note">The number of parts is chosen automatically. You can split any part
-            again afterwards. <button class="link advanced-toggle" type="button">Advanced</button></p>
+          <label class="control engine-pick hidden">
+            <span class="control-label">Engine</span>
+            <select class="option-input engine-select"></select>
+          </label>
+          <p class="auto-note"><span class="engine-desc"></span>
+            <button class="link advanced-toggle" type="button">Advanced</button></p>
           <div class="advanced hidden">
             <div class="control-grid engine-options"></div>
           </div>
@@ -182,6 +187,9 @@ export class Deck {
       advancedToggle: q<HTMLButtonElement>('.advanced-toggle'),
       advanced: q('.advanced'),
       engineOptions: q('.engine-options'),
+      enginePick: q('.engine-pick'),
+      engineSelect: q<HTMLSelectElement>('.engine-select'),
+      engineDesc: q('.engine-desc'),
       decompose: q<HTMLButtonElement>('.decompose'),
       progress: q('.progress'),
       progressFill: q('.fill'),
@@ -228,7 +236,11 @@ export class Deck {
   private wireEvents(): void {
     const e = this.els;
 
-    renderOptions(e.engineOptions, this.separator.info.options, this.separatorOptions);
+    this.useEngine(this.separator);
+    e.engineSelect.addEventListener('change', () => {
+      const next = this.separators.find((s) => s.info.id === e.engineSelect.value);
+      if (next) this.useEngine(next);
+    });
 
     e.advancedToggle.addEventListener('click', () => {
       const hidden = e.advanced.classList.toggle('hidden');
@@ -276,6 +288,28 @@ export class Deck {
     e.stopAll.addEventListener('click', () => this.engine.stop());
     e.combine.addEventListener('click', () => this.combineParts(this.selection));
     e.loopBox.addEventListener('change', () => this.engine.setLoop(e.loopBox.checked));
+  }
+
+  // --- Engines ---
+  /** Offer more separation engines (e.g. from a local server); shows the picker. */
+  addEngines(engines: SeparationEngine[]): void {
+    if (engines.length === 0) return;
+    this.separators.push(...engines);
+    this.els.engineSelect.replaceChildren(...this.separators.map((s) => new Option(s.info.name, s.info.id)));
+    this.els.engineSelect.value = this.separator.info.id;
+    this.els.enginePick.classList.remove('hidden');
+  }
+
+  private useEngine(engine: SeparationEngine): void {
+    this.separator = engine;
+    this.separatorOptions = defaultOptions(engine.info);
+    this.els.engineDesc.textContent = engine.info.description ?? '';
+    renderOptions(this.els.engineOptions, engine.info.options, this.separatorOptions);
+  }
+
+  /** Splitting re-runs on one part's audio, so any engine that supports it will do. */
+  private get splitter(): SeparationEngine | undefined {
+    return this.separators.find((s) => s.info.canSplit && s.split);
   }
 
   // --- Source loading ---
@@ -489,20 +523,23 @@ export class Deck {
   }
 
   private async requestSplit(index: number): Promise<void> {
-    if (this.busy || !this.separator.split) return;
+    const splitter = this.splitter;
+    if (this.busy || !splitter?.split) return;
     const comp = this.components[index];
     if (!comp) return;
     this.busy = true;
     this.showProgress(0, 'Splitting');
     try {
-      const raw = await this.separator.split(
+      const raw = await splitter.split(
         { channels: comp.channels, sampleRate: this.resultSampleRate, kind: comp.kind, count: 2 },
         { onProgress: (f, stage) => this.showProgress(f, stage) },
       );
       // The parent was already loop-trimmed, so its sub-parts need no trim.
       const result = finishParts(raw);
       this.els.progress.classList.add('hidden');
-      this.components.splice(index, 1, ...result.parts);
+      // Sub-parts keep the parent's name ("Drums" → "Drums 1", "Drums 2").
+      const parts = result.parts.map((p) => ({ ...p, label: comp.label }));
+      this.components.splice(index, 1, ...parts);
       this.renderResults();
     } catch (err) {
       this.showMessage(`Split failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -520,7 +557,8 @@ export class Deck {
     const kind = kinds.size === 1 ? members[0].kind : 'mixed';
 
     const pitch = kind === 'percussive' ? undefined : analyzePitch(channels[0], this.resultSampleRate);
-    const label = members.map((m) => m.label).join(' + ');
+    const names = [...new Set(members.map((m) => m.label))];
+    const label = names.join(' + ');
     const combined: Part = { channels, kind, label, energy: rms(channels[0]), pitch };
     const drop = new Set(sorted);
     const next: Part[] = [];
@@ -562,7 +600,7 @@ export class Deck {
     const buffers = this.components.map((c) => toAudioBuffer(c.channels, this.resultSampleRate));
     this.engine.setTracks(buffers);
     this.view = renderComponents(this.els.cards, this.components, this.engine, this.resultSampleRate, {
-      onSplit: (index) => void this.requestSplit(index),
+      onSplit: this.splitter ? (index) => void this.requestSplit(index) : undefined,
       onSelectionChange: (indices) => {
         this.selection = indices;
         this.updateCombineButton();

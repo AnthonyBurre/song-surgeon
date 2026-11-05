@@ -23,6 +23,8 @@ export interface EngineInfo {
   id: string;
   /** Human name for the engine picker. */
   name: string;
+  /** One or two sentences shown above the controls. */
+  description?: string;
   /** Where the compute happens — shown to the user so the cost is visible. */
   runtime: 'browser' | 'local-server';
   /** Longest input the engine accepts, in seconds (undefined = no cap). */
@@ -55,7 +57,7 @@ export interface Part {
    * Stem engines map their stems onto it: drums → percussive, the rest → harmonic.
    */
   kind: PartKind;
-  /** Display name, e.g. 'Percussive 1', 'Vocals', 'Bass'. */
+  /** Display name, e.g. 'Percussive', 'Vocals', 'Bass'. Repeats are numbered by the UI. */
   label: string;
   /** RMS energy, for ordering and display. */
   energy: number;

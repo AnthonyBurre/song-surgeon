@@ -1,8 +1,11 @@
 import { defineConfig } from 'vite';
 
-// On GitHub Pages a project site is served from /<repo>/, so the production
-// build needs that base path. Dev server stays at root.
-export default defineConfig(({ command }) => ({
-  base: command === 'build' ? '/song-surgeon/' : '/',
+// Relative asset paths, so the same build works on GitHub Pages (served from
+// /<repo>/) and from the local engine server (served from /).
+export default defineConfig({
+  base: './',
   worker: { format: 'es' },
-}));
+  // In dev, forward API calls to a running engine server (`npm run engine`),
+  // so the page and the API share an origin just as they do in production.
+  server: { proxy: { '/api': 'http://127.0.0.1:8000' } },
+});

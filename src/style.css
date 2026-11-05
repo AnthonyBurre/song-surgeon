@@ -241,6 +241,10 @@ body {
   margin-bottom: 1.1rem;
   background: rgba(255, 255, 255, 0.015);
 }
+.engine-pick {
+  margin-bottom: 0.9rem;
+  align-items: flex-start;
+}
 .option-input {
   background: var(--panel-2);
   color: var(--text);

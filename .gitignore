@@ -5,3 +5,7 @@ dist-ssr
 .vite
 .DS_Store
 *.log
+
+# Local engine server
+server/.venv
+__pycache__

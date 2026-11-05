@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "engine": "uv run --project server song-surgeon",
+    "start": "npm run build && npm run engine"
   },
   "dependencies": {
     "wavesurfer.js": "^7.8.6"

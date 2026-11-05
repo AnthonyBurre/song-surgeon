@@ -1,9 +1,10 @@
 # Song Surgeon
 
-A static web app that pulls a track apart into independent, repeating signals you
+A web app that pulls a track apart into independent, repeating signals you
 can solo, loop, and download. Drop in an audio file, crop a segment, choose how
-many parts to extract, and the app decomposes the segment client-side — no server,
-no upload. Built to deploy on GitHub Pages.
+many parts to extract, and the app decomposes the segment on your own machine —
+nothing is uploaded anywhere. It runs as a static page (e.g. GitHub Pages), or
+locally with an optional engine server for neural stem separation.
 
 ## How it works
 
@@ -54,21 +55,54 @@ is mathematically impossible — this produces a useful *approximation*. It work
 on short, clearly loop-based segments. A single drum loop may split across
 components, and results depend on the chosen part counts.
 
+## Separation engines
+
+Splitting goes through a small engine interface (`src/engine/types.ts`), so the
+same UI can use different separators. Each engine describes its own options and the
+UI draws them; pick one from the **Engine** menu in step 2.
+
+| Engine | Runs in | Output | Needs |
+|--------|---------|--------|-------|
+| **Built-in loops** | the browser | repeating loops (HPSS + NMF) | nothing |
+| **Demucs stems** | local server | instrument stems: drums, bass, vocals, other (or 6 stems incl. guitar, piano) | Python + PyTorch |
+
+The local server is optional. Without it (e.g. on GitHub Pages) only the built-in
+engine appears. **Split** always uses the built-in engine, so a Demucs stem can be
+broken down further into loops.
+
+### Run locally with the engine server
+
+Requires [uv](https://docs.astral.sh/uv/) and Node. Apple Silicon (MPS), NVIDIA
+(CUDA), or CPU; Intel Macs aren't supported by current PyTorch.
+
+```bash
+npm install
+npm start        # builds the UI, then serves it + the engine API at http://localhost:8000
+```
+
+The first `npm start` installs the Python dependencies (PyTorch is large), and the
+first separation downloads the chosen Demucs model (~80 MB, cached afterwards). The
+server listens on `127.0.0.1` only. `uv run --project server song-surgeon --help`
+lists its flags (`--port`, `--device`, …).
+
+The HTTP protocol between the page and the server is documented at the top of
+`server/song_surgeon_server/app.py`.
+
 ## Develop
 
 ```bash
 npm install
-npm run dev      # Vite dev server
-npm test         # DSP unit tests (FFT round-trip, STFT, NMF, conservation)
+npm run dev      # Vite dev server (proxies /api to an engine server on :8000)
+npm run engine   # optional: the engine server, in a second terminal
+npm test         # unit tests (DSP, WAV codec, arrangement)
 npm run build    # typecheck + production build to dist/
 ```
 
 ## Deploy
 
 Pushing to `main` triggers `.github/workflows/deploy.yml`, which builds and
-publishes `dist/` to GitHub Pages. The production build uses the base path
-`/song-surgeon/` (see `vite.config.ts`) — adjust if the repo name differs, and
-enable Pages → "GitHub Actions" in the repo settings.
+publishes `dist/` to GitHub Pages (enable Pages → "GitHub Actions" in the repo
+settings). The build uses relative asset paths, so it works under any repo name.
 
 ## Roadmap
 

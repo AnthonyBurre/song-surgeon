@@ -1,0 +1,29 @@
+[project]
+name = "song-surgeon-server"
+version = "0.1.0"
+description = "Optional local engine server for Song Surgeon: native stem separation (Demucs) behind the same UI."
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.32",
+  "python-multipart>=0.0.20",
+  "numpy>=1.26",
+  "soundfile>=0.12",
+  "torch>=2.5",
+  "demucs>=4.1",
+]
+
+[project.scripts]
+song-surgeon = "song_surgeon_server.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Recent torch ships no Intel-Mac wheels, so the lock targets these platforms only.
+[tool.uv]
+environments = [
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "sys_platform == 'linux'",
+  "sys_platform == 'win32'",
+]

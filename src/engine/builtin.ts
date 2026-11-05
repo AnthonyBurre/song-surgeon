@@ -23,7 +23,8 @@ const countChoices = [
 
 const INFO: EngineInfo = {
   id: 'builtin-nmf',
-  name: 'Built-in (loops)',
+  name: 'Built-in loops (browser)',
+  description: 'Finds repeating loops in the selection. The number of parts is chosen automatically; you can split any part again afterwards.',
   runtime: 'browser',
   maxSeconds: MAX_SECONDS,
   canSplit: true,
@@ -38,12 +39,7 @@ function streamConfig(value: OptionValues[string] | undefined): StreamConfig {
 }
 
 function toParts(components: ComponentMessage[]): Part[] {
-  const seen: Record<string, number> = {};
-  return components.map((c) => {
-    seen[c.kind] = (seen[c.kind] ?? 0) + 1;
-    const name = c.kind[0].toUpperCase() + c.kind.slice(1);
-    return { ...c, label: `${name} ${seen[c.kind]}` };
-  });
+  return components.map((c) => ({ ...c, label: c.kind[0].toUpperCase() + c.kind.slice(1) }));
 }
 
 export class BuiltinEngine implements SeparationEngine {

@@ -10,6 +10,7 @@ import { renderComposition, type RenderPlan, type RenderSlot } from './audio/arr
 import { ConformService } from './audio/conform';
 import { audioContext, cropChannels, encodeWav } from './audio/audioUtils';
 import type { ComponentMessage } from './dsp/worker';
+import { discoverServerEngines, HttpEngine } from './engine/http';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
@@ -40,6 +41,12 @@ const deckB = new Deck(document.querySelector<HTMLElement>('#deck-b')!, {
   title: 'Follow-up song',
   subtitle: 'Plays second — crop the part you want to transition into.',
   onChange: refreshCrossSong,
+});
+
+// When the page is served by the local engine server (server/), offer its
+// engines alongside the built-in one. On a static host this finds nothing.
+void discoverServerEngines().then((infos) => {
+  for (const deck of [deckA, deckB]) deck.addEngines(infos.map((info) => new HttpEngine(info)));
 });
 
 // --- Cross-song state ---
